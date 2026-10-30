@@ -153,6 +153,36 @@ def compress(target, base):
         zip_file.close()
 
 
+def get_font(fontsize, bold=False, italics=False):
+    """ Try to load font from known location in OMERO """
+
+    if omero_installed:
+        from omero.gateway import THISPATH
+        FONTPATH = os.path.join(THISPATH, "pilfonts")
+    else:
+        # get location of this script... /pilfonts
+        this_path = os.path.dirname(os.path.abspath(__file__))
+        FONTPATH = os.path.join(this_path, "pilfonts")
+
+    font_name = "FreeSans.ttf"
+    if bold and italics:
+        font_name = "FreeSansBoldOblique.ttf"
+    elif bold:
+        font_name = "FreeSansBold.ttf"
+    elif italics:
+        font_name = "FreeSansOblique.ttf"
+    path_to_font = os.path.join(FONTPATH, font_name)
+    try:
+        font = ImageFont.truetype(path_to_font, fontsize)
+    except Exception:
+        try:
+            font_path = os.path.join(FONTPATH, "B24.pil")
+            font = ImageFont.load(font_path)
+        except Exception:
+            font = ImageFont.load_default()
+    return font
+
+
 class Bounds(object):
 
     def __init__(self, *points):
@@ -668,35 +698,7 @@ class ShapeToPilExport(ShapeExport):
         self.scale = pil_img.size[0] / crop['width']
         self.draw = ImageDraw.Draw(pil_img)
 
-        if omero_installed:
-            from omero.gateway import THISPATH
-            self.FONTPATH = os.path.join(THISPATH, "pilfonts")
-        else:
-            # get location of this script... /pilfonts
-            this_path = os.path.dirname(os.path.abspath(__file__))
-            self.FONTPATH = os.path.join(this_path, "pilfonts")
-
         super(ShapeToPilExport, self).__init__(panel)
-
-    def get_font(self, fontsize, bold=False, italics=False):
-        """ Try to load font from known location in OMERO or local """
-        font_name = "FreeSans.ttf"
-        if bold and italics:
-            font_name = "FreeSansBoldOblique.ttf"
-        elif bold:
-            font_name = "FreeSansBold.ttf"
-        elif italics:
-            font_name = "FreeSansOblique.ttf"
-        path_to_font = os.path.join(self.FONTPATH, font_name)
-        try:
-            font = ImageFont.truetype(path_to_font, fontsize)
-        except Exception:
-            try:
-                font_path = os.path.join(self.FONTPATH, "B24.pil")
-                font = ImageFont.load(font_path)
-            except Exception:
-                font = ImageFont.load_default()
-        return font
 
     def get_panel_coords(self, shape_x, shape_y):
         """
@@ -752,7 +754,7 @@ class ShapeToPilExport(ShapeExport):
         r, g, b, a = self.get_rgba_int(shape['strokeColor'])
         # bump up alpha a bit to make text more readable
         rgba = (r, g, b, int(128 + a / 2))
-        font = self.get_font(size)
+        font = get_font(size)
         box = font.getbbox(text)
         width = box[2] - box[0]
         height = box[3] - box[1]
@@ -773,7 +775,7 @@ class ShapeToPilExport(ShapeExport):
         x, y = text_coords['x'], text_coords['y']
 
         r, g, b, a = self.get_rgba_int(stroke_color)
-        font = self.get_font(font_size)
+        font = get_font(font_size)
         box = font.getbbox(text)
         txt_w = box[2] - box[0]
         box = font.getbbox("Mg")  # height including acsenders & descenders
@@ -1908,7 +1910,9 @@ class FigureExport(object):
                 ly + ((-1 if position in ["bottomleft", "bottomright"]
                        else 1) * half_height),
                 font_size, (red, green, blue),
-                align="center")
+                align="center", 
+                wrap=(x if "left" in position else (x + width)),
+                wrap_position=position)
 
     def get_color_ramp(self, channel):
         """
@@ -2806,17 +2810,25 @@ class FigureExport(object):
         """ Completes PDF figure (or info-page PDF for TIFF export) """
         self.figure_canvas.save()
 
-    def draw_text(self, text, x, y, fontsize, rgb, align="center"):
+    def draw_text(self, text, x, y, fontsize, rgb, align="center", wrap=0, wrap_position="bottomright"):
         """ Adds text to PDF. Overwritten for TIFF below """
-        if markdown_imported:
-            # convert markdown to html
-            text = markdown.markdown(text)
 
         y = self.page_height - y
         c = self.figure_canvas
+
         # Needs to be wide enough to avoid wrapping
         para_width = self.page_width
 
+        # except if wrapping is necessary (for the scalebar label)
+        if wrap > 0:
+            font = get_font(fontsize)
+            bbox = font.getbbox(text)
+            para_width = min(bbox[2] + 1, abs(wrap - x + (-1 if "left" in wrap_position else 1)*(bbox[2] / 2)))
+        
+        if markdown_imported:
+            # convert markdown to html
+            text = markdown.markdown(text)
+        
         red, green, blue = rgb
         red = float(red) / 255
         green = float(green) / 255
@@ -2862,8 +2874,9 @@ class FigureExport(object):
             fontSize=fontsize)
 
         para = Paragraph(text, style)
-        w, h = para.wrap(para_width, y)  # find required space
-        para.drawOn(c, x, y - h + int(fontsize * 0.25))
+        _, h = para.wrap(self.page_width, y)  # to get the right heigth, with ot without wrapping
+        _, h1 = para.wrap(para_width, y)  # to find required space, adapted in height in case of wrapping
+        para.drawOn(c, x, y - (h if "bottom" in wrap_position else h1) + int(fontsize * 0.25))
 
         # Rotate back again
         if align == 'left-vertical':
@@ -2954,39 +2967,12 @@ class TiffExport(FigureExport):
 
         super(TiffExport, self).__init__(conn, script_params, export_images)
 
-        if omero_installed:
-            from omero.gateway import THISPATH
-            self.FONTPATH = os.path.join(THISPATH, "pilfonts")
-        else:
-            # get location of this script... /pilfonts
-            this_path = os.path.dirname(os.path.abspath(__file__))
-            self.FONTPATH = os.path.join(this_path, "pilfonts")
         self.ns = "omero.web.figure.tiff"
         self.mimetype = "image/tiff"
 
     def add_rois(self, panel, page):
         """ TIFF export doesn't add ROIs to page (does it to panel)"""
         pass
-
-    def get_font(self, fontsize, bold=False, italics=False):
-        """ Try to load font from known location in OMERO """
-        font_name = "FreeSans.ttf"
-        if bold and italics:
-            font_name = "FreeSansBoldOblique.ttf"
-        elif bold:
-            font_name = "FreeSansBold.ttf"
-        elif italics:
-            font_name = "FreeSansOblique.ttf"
-        path_to_font = os.path.join(self.FONTPATH, font_name)
-        try:
-            font = ImageFont.truetype(path_to_font, fontsize)
-        except Exception:
-            try:
-                font_path = os.path.join(self.FONTPATH, "B24.pil")
-                font = ImageFont.load(font_path)
-            except Exception:
-                font = ImageFont.load_default()
-        return font
 
     def get_figure_file_ext(self):
         return "tiff"
@@ -3100,7 +3086,7 @@ class TiffExport(FigureExport):
         widths = []
         heights = []
         for t in tokens:
-            font = self.get_font(fontsize, t['bold'], t['italics'])
+            font = get_font(fontsize, t['bold'], t['italics'])
             box = font.getbbox(t['text'])
             txt_w = box[2] - box[0]
             txt_h = box[3] - box[1]
@@ -3115,7 +3101,7 @@ class TiffExport(FigureExport):
 
         w = 0
         for t in tokens:
-            font = self.get_font(fontsize, t['bold'], t['italics'])
+            font = get_font(fontsize, t['bold'], t['italics'])
             box = font.getbbox(t['text'])
             txt_w = box[2] - box[0]
             txt_h = box[3] - box[1]
@@ -3275,7 +3261,7 @@ class TiffExport(FigureExport):
         tokens.append({'text': token, 'bold': in_bold, 'italics': in_italics})
         return tokens
 
-    def draw_text(self, text, x, y, fontsize, rgb, align="center"):
+    def draw_text(self, text, x, y, fontsize, rgb, align="center", wrap=0, wrap_position="bottomright"):
         """ Add text to the current figure page """
         x = scale_to_export_dpi(x)
         y = scale_to_export_dpi(y)
