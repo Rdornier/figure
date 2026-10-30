@@ -26,6 +26,7 @@ from datetime import datetime
 import os
 from os import path
 import zipfile
+import textwrap
 from math import atan2, atan, sin, cos, sqrt, radians, floor, ceil, log2
 from copy import deepcopy
 import re
@@ -1844,16 +1845,20 @@ class FigureExport(object):
         if position == 'topleft':
             lx = x + spacer
             ly = y + spacer + half_height
+            wrap = x
         elif position == 'topright':
             lx = x + width - spacer
             ly = y + spacer + half_height
             align = "right"
+            wrap = x + width
         elif position == 'bottomleft':
             lx = x + spacer
             ly = y + height - spacer - half_height
+            wrap = x
         elif position == 'bottomright':
             lx = x + width - spacer
             ly = y + height - spacer - half_height
+            wrap = x + width
             align = "right"
 
         pixel_size_x = panel['pixel_size_x']
@@ -1905,14 +1910,29 @@ class FigureExport(object):
             else:
                 ly = ly + 5
 
-            self.draw_text(
-                label, (lx + lx_end) / 2,
-                ly + ((-1 if position in ["bottomleft", "bottomright"]
-                       else 1) * half_height),
-                font_size, (red, green, blue),
-                align="center", 
-                wrap=(x if "left" in position else (x + width)),
-                wrap_position=position)
+            font = get_font(font_size)
+            bbox = font.getbbox(label)
+            para_width = min(bbox[2] + 1, abs(wrap - ((lx + lx_end) / 2) + (-1 if "left" in position else 1)*(bbox[2] / 2)))
+
+            label_list = []
+            if para_width <= bbox[2]:
+                if 'bottom' in position: 
+                    label_list.append(("%s" % (symbol), ly - half_height))
+                    label_list.append(("%s" % (sb['length']), ly - half_height - bbox[3]))
+                else:
+                    label_list.append(("%s" % (sb['length']), ly + half_height))
+                    label_list.append(("%s" % (symbol), ly + half_height + bbox[3])) 
+            else:
+                label_list.append((label, ly + ((-1 if 'bottom' in position else 1) * half_height)))
+
+            for label_tuple in label_list:
+                self.draw_text(
+                    label_tuple[0], 
+                    (lx + lx_end) / 2,
+                    label_tuple[1],
+                    font_size, 
+                    (red, green, blue),
+                    align="center")
 
     def get_color_ramp(self, channel):
         """
@@ -2810,24 +2830,16 @@ class FigureExport(object):
         """ Completes PDF figure (or info-page PDF for TIFF export) """
         self.figure_canvas.save()
 
-    def draw_text(self, text, x, y, fontsize, rgb, align="center", wrap=0, wrap_position="bottomright"):
+    def draw_text(self, text, x, y, fontsize, rgb, align="center"):
         """ Adds text to PDF. Overwritten for TIFF below """
-
-        y = self.page_height - y
-        c = self.figure_canvas
-
-        # Needs to be wide enough to avoid wrapping
-        para_width = self.page_width
-
-        # except if wrapping is necessary (for the scalebar label)
-        if wrap > 0:
-            font = get_font(fontsize)
-            bbox = font.getbbox(text)
-            para_width = min(bbox[2] + 1, abs(wrap - x + (-1 if "left" in wrap_position else 1)*(bbox[2] / 2)))
-        
         if markdown_imported:
             # convert markdown to html
             text = markdown.markdown(text)
+
+        y = self.page_height - y
+        c = self.figure_canvas
+        # Needs to be wide enough to avoid wrapping
+        para_width = self.page_width
         
         red, green, blue = rgb
         red = float(red) / 255
@@ -2874,9 +2886,8 @@ class FigureExport(object):
             fontSize=fontsize)
 
         para = Paragraph(text, style)
-        _, h = para.wrap(self.page_width, y)  # to get the right heigth, with ot without wrapping
-        _, h1 = para.wrap(para_width, y)  # to find required space, adapted in height in case of wrapping
-        para.drawOn(c, x, y - (h if "bottom" in wrap_position else h1) + int(fontsize * 0.25))
+        w, h = para.wrap(self.page_width, y)  # to get the right heigth, with ot without wrapping
+        para.drawOn(c, x, y - h + int(fontsize * 0.25))
 
         # Rotate back again
         if align == 'left-vertical':
@@ -3261,7 +3272,7 @@ class TiffExport(FigureExport):
         tokens.append({'text': token, 'bold': in_bold, 'italics': in_italics})
         return tokens
 
-    def draw_text(self, text, x, y, fontsize, rgb, align="center", wrap=0, wrap_position="bottomright"):
+    def draw_text(self, text, x, y, fontsize, rgb, align="center"):
         """ Add text to the current figure page """
         x = scale_to_export_dpi(x)
         y = scale_to_export_dpi(y)
